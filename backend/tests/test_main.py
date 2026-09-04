@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from app.db.connection import db_session
 from app.github_client import InvalidRepoError, RateLimitError, RepoNotFoundError
 from app.main import app
+from app.narrative import NarrativeGenerationError, NarrativeResult
 
 
 @pytest.fixture
@@ -70,3 +71,37 @@ class TestGetContributors:
     def test_malformed_date_is_422(self, client):
         resp = client.get("/insights/contributors", params={"repo": "o/r", "since": "not-a-date", "until": "2025-01-01"})
         assert resp.status_code == 422
+
+
+class TestGetNarrative:
+    def test_returns_narrative_without_hitting_network_or_the_cli(self, client):
+        fake_result = NarrativeResult(
+            narrative="Alice dominated.",
+            root_cause_hypothesis="Alice is the maintainer.",
+            confidence=0.8,
+            evidence=["alice: 5 commits"],
+        )
+        with patch("app.main.ingest_repo"), patch("app.main.generate_narrative", return_value=fake_result) as mock_gen:
+            resp = client.get("/insights/narrative", params={"repo": "o/r", "since": "2025-01-01", "until": "2025-02-01"})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["narrative"] == "Alice dominated."
+        assert body["confidence"] == 0.8
+        mock_gen.assert_called_once()
+
+    def test_narrative_generation_error_maps_to_502(self, client):
+        with patch("app.main.ingest_repo"), patch("app.main.generate_narrative", side_effect=NarrativeGenerationError("cli exploded")):
+            resp = client.get("/insights/narrative", params={"repo": "o/r", "since": "2025-01-01", "until": "2025-02-01"})
+        assert resp.status_code == 502
+        assert resp.json()["detail"] == "cli exploded"
+
+    def test_invalid_repo_maps_to_400_before_narrative_generation(self, client):
+        with patch("app.main.ingest_repo", side_effect=InvalidRepoError("bad repo")), patch("app.main.generate_narrative") as mock_gen:
+            resp = client.get("/insights/narrative", params={"repo": "bad", "since": "2025-01-01", "until": "2025-02-01"})
+        assert resp.status_code == 400
+        mock_gen.assert_not_called()
+
+    def test_until_before_since_is_400(self, client):
+        resp = client.get("/insights/narrative", params={"repo": "o/r", "since": "2025-02-01", "until": "2025-01-01"})
+        assert resp.status_code == 400
