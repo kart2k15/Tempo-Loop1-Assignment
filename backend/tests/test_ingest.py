@@ -26,6 +26,15 @@ def pull_request(number, login, created_at, merged_at, additions=None, deletions
     }
 
 
+def review(review_id, login, state="APPROVED", submitted_at="2025-06-13T00:00:00Z"):
+    return {
+        "id": review_id,
+        "user": {"login": login},
+        "state": state,
+        "submitted_at": submitted_at,
+    }
+
+
 def make_client(handler, calls=None):
     if calls is not None:
         inner_handler = handler
@@ -66,6 +75,8 @@ class TestIngestRepo:
                     200,
                     json=pull_request(3, "carol", "2025-06-12T00:00:00Z", "2025-06-14T00:00:00Z", additions=10, deletions=2),
                 )
+            if path.endswith("/pulls/3/reviews"):
+                return httpx.Response(200, json=[review(1001, "frank"), review(1002, "grace", state="COMMENTED")])
             raise AssertionError(f"unexpected request: {path}")
 
         client = make_client(handler, calls)
@@ -74,16 +85,24 @@ class TestIngestRepo:
         with db_session() as conn:
             commits = [dict(r) for r in conn.execute("SELECT sha, author_login FROM commits ORDER BY sha")]
             prs = [dict(r) for r in conn.execute("SELECT number, author_login, additions, deletions FROM pull_requests")]
+            reviews = [
+                dict(r) for r in conn.execute("SELECT pr_number, reviewer_login, state FROM reviews ORDER BY review_id")
+            ]
 
         assert commits == [
             {"sha": "aaa", "author_login": "alice"},
             {"sha": "bbb", "author_login": "bob"},
         ]
         assert prs == [{"number": 3, "author_login": "carol", "additions": 10, "deletions": 2}]
+        assert reviews == [
+            {"pr_number": 3, "reviewer_login": "frank", "state": "APPROVED"},
+            {"pr_number": 3, "reviewer_login": "grace", "state": "COMMENTED"},
+        ]
         # PR #1 was created before `since` - pagination must stop before reaching it
         assert not any(c.endswith("/pulls/1") for c in calls)
-        # PR #2 was never merged - must not trigger a detail call
+        # PR #2 was never merged - must not trigger a detail or reviews call
         assert not any(c.endswith("/pulls/2") for c in calls)
+        assert not any(c.endswith("/pulls/2/reviews") for c in calls)
 
     def test_skips_refetch_when_cache_is_fresh(self, test_db):
         client = make_client(lambda request: httpx.Response(200, json=[]))

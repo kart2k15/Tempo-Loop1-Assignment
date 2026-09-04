@@ -29,3 +29,17 @@ CREATE TABLE IF NOT EXISTS pull_requests (
     PRIMARY KEY (repo, number)
 );
 CREATE INDEX IF NOT EXISTS idx_prs_repo_merged ON pull_requests (repo, merged_at);
+
+-- One row per review submitted on a merged PR we've ingested. Used to derive who reviewed
+-- whose PRs (author_login on pull_requests <-> reviewer_login here), not a general-purpose
+-- issue/review store - only covers PRs already in pull_requests.
+CREATE TABLE IF NOT EXISTS reviews (
+    repo TEXT NOT NULL,
+    pr_number INTEGER NOT NULL,
+    review_id INTEGER NOT NULL,
+    reviewer_login TEXT,
+    state TEXT,
+    submitted_at TEXT,
+    PRIMARY KEY (repo, review_id)
+);
+CREATE INDEX IF NOT EXISTS idx_reviews_repo_pr ON reviews (repo, pr_number);

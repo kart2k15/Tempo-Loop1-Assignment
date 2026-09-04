@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.db.connection import db_session
-from app.metrics import ContributorStats, compute_contributors
+from app.metrics import CollaborationEdge, ContributorStats, compute_collaboration_edges, compute_contributors
 
 REPO = "o/r"
 
@@ -21,6 +21,16 @@ def seed_pr(conn, number, author_login, merged_at, additions, deletions, repo=RE
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (repo, number, author_login, created_at or merged_at, merged_at, additions, deletions),
+    )
+
+
+def seed_review(conn, review_id, pr_number, reviewer_login, state="APPROVED", submitted_at="2025-01-15T00:00:00Z", repo=REPO):
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO reviews (repo, pr_number, review_id, reviewer_login, state, submitted_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (repo, pr_number, review_id, reviewer_login, state, submitted_at),
     )
 
 
@@ -74,3 +84,47 @@ class TestComputeContributors:
         stats = compute_contributors(REPO, since="2025-01-01T00:00:00Z", until="2025-02-01T00:00:00Z")
 
         assert [s.login for s in stats] == ["amy", "zed"]
+
+
+class TestComputeCollaborationEdges:
+    def test_counts_reviews_per_author_reviewer_pair(self, test_db):
+        with db_session() as conn:
+            seed_pr(conn, 1, "alice", merged_at="2025-01-10T00:00:00Z", additions=1, deletions=1)
+            seed_review(conn, 1, 1, "bob")
+            seed_review(conn, 2, 1, "bob")
+            seed_review(conn, 3, 1, "carol")
+
+        edges = compute_collaboration_edges(REPO, since="2025-01-01T00:00:00Z", until="2025-02-01T00:00:00Z")
+
+        assert edges == [
+            CollaborationEdge(author="alice", reviewer="bob", reviews=2),
+            CollaborationEdge(author="alice", reviewer="carol", reviews=1),
+        ]
+
+    def test_self_reviews_are_excluded(self, test_db):
+        with db_session() as conn:
+            seed_pr(conn, 1, "alice", merged_at="2025-01-10T00:00:00Z", additions=1, deletions=1)
+            seed_review(conn, 1, 1, "alice")
+
+        assert compute_collaboration_edges(REPO, since="2025-01-01T00:00:00Z", until="2025-02-01T00:00:00Z") == []
+
+    def test_reviews_on_prs_outside_the_window_are_excluded(self, test_db):
+        with db_session() as conn:
+            seed_pr(conn, 1, "alice", merged_at="2024-12-01T00:00:00Z", additions=1, deletions=1)
+            seed_review(conn, 1, 1, "bob")
+
+        assert compute_collaboration_edges(REPO, since="2025-01-01T00:00:00Z", until="2025-02-01T00:00:00Z") == []
+
+    def test_reviews_on_unmerged_prs_are_excluded(self, test_db):
+        with db_session() as conn:
+            seed_pr(conn, 1, "alice", merged_at=None, additions=1, deletions=1, created_at="2025-01-10T00:00:00Z")
+            seed_review(conn, 1, 1, "bob")
+
+        assert compute_collaboration_edges(REPO, since="2025-01-01T00:00:00Z", until="2025-02-01T00:00:00Z") == []
+
+    def test_excludes_other_repos(self, test_db):
+        with db_session() as conn:
+            seed_pr(conn, 1, "alice", merged_at="2025-01-10T00:00:00Z", additions=1, deletions=1, repo="other/repo")
+            seed_review(conn, 1, 1, "bob", repo="other/repo")
+
+        assert compute_collaboration_edges(REPO, since="2025-01-01T00:00:00Z", until="2025-02-01T00:00:00Z") == []

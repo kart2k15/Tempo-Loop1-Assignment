@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from app.config import settings
 from app.db.connection import db_session
@@ -21,24 +21,29 @@ def _is_cache_fresh(repo: str, since: str, until: str) -> bool:
     return age_seconds < settings.cache_ttl_seconds
 
 
-def _collect_merged_prs_in_range(gh: GitHubClient, repo: str, since: str, until: str) -> List[dict]:
-    """PRs merged within [since, until).
+def _collect_merged_prs_and_reviews(
+    gh: GitHubClient, repo: str, since: str, until: str
+) -> Tuple[List[dict], List[Tuple[int, dict]]]:
+    """PRs merged within [since, until), plus every review submitted on each of them.
 
-    Per-PR detail calls (needed for additions/deletions, which the list endpoint omits) are
-    bounded to only PRs actually merged in the window, not every PR in the repo's history.
+    Per-PR detail and per-PR review calls (the list endpoint has neither additions/deletions
+    nor reviews) are bounded to only PRs actually merged in the window, not every PR in the
+    repo's history.
 
     Known limitation: stops paginating once a PR's created_at falls before `since`, since the
     list endpoint is sorted by creation date descending - a long-lived PR opened before the
     window but merged inside it would be missed. Documented in NOTES.md.
     """
-    merged_prs = []
+    merged_prs: List[dict] = []
+    reviews: List[Tuple[int, dict]] = []
     for pr in gh.list_pull_requests(repo, state="all"):
         if pr["created_at"] < since:
             break
         merged_at = pr.get("merged_at")
         if merged_at and since <= merged_at < until:
             merged_prs.append(gh.get_pull_request(repo, pr["number"]))
-    return merged_prs
+            reviews.extend((pr["number"], review) for review in gh.list_reviews(repo, pr["number"]))
+    return merged_prs, reviews
 
 
 def ingest_repo(
@@ -48,7 +53,8 @@ def ingest_repo(
     force: bool = False,
     client: Optional[GitHubClient] = None,
 ) -> None:
-    """Fetch commits and merged PRs for `repo` in [since, until) and upsert into SQLite.
+    """Fetch commits, merged PRs, and their reviews for `repo` in [since, until) and upsert
+    into SQLite.
 
     Skips the GitHub calls entirely if this exact (repo, since, until) window was already
     ingested within the cache TTL. `client` can be injected for testing.
@@ -60,7 +66,7 @@ def ingest_repo(
     gh = client or GitHubClient()
     try:
         commits = list(gh.list_commits(repo, since=since, until=until))
-        merged_prs = _collect_merged_prs_in_range(gh, repo, since, until)
+        merged_prs, reviews = _collect_merged_prs_and_reviews(gh, repo, since, until)
     finally:
         if owns_client:
             gh.close()
@@ -98,6 +104,23 @@ def ingest_repo(
                     pr.get("deletions"),
                 )
                 for pr in merged_prs
+            ],
+        )
+        conn.executemany(
+            """
+            INSERT OR REPLACE INTO reviews (repo, pr_number, review_id, reviewer_login, state, submitted_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    repo,
+                    pr_number,
+                    review["id"],
+                    (review.get("user") or {}).get("login"),
+                    review.get("state"),
+                    review.get("submitted_at"),
+                )
+                for pr_number, review in reviews
             ],
         )
         conn.execute(

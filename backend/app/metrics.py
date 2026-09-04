@@ -14,6 +14,13 @@ class ContributorStats:
     lines_changed: int
 
 
+@dataclass(frozen=True)
+class CollaborationEdge:
+    author: str
+    reviewer: str
+    reviews: int
+
+
 def compute_contributors(repo: str, since: str, until: str) -> List[ContributorStats]:
     """Top contributors in [since, until), ranked by (commits, prs_merged, lines_changed).
 
@@ -64,3 +71,30 @@ def compute_contributors(repo: str, since: str, until: str) -> List[ContributorS
     ]
     stats.sort(key=lambda s: (s.commits, s.prs_merged, s.lines_changed), reverse=True)
     return stats
+
+
+def compute_collaboration_edges(repo: str, since: str, until: str) -> List[CollaborationEdge]:
+    """Author <-> reviewer edges for PRs merged in [since, until): how many times `reviewer`
+    reviewed a PR authored by `author`. Self-reviews are excluded - not a meaningful
+    collaboration signal. Requires reviews to have been ingested for this window.
+    """
+    with db_session() as conn:
+        rows = conn.execute(
+            """
+            SELECT pr.author_login AS author, r.reviewer_login AS reviewer, COUNT(*) AS reviews
+            FROM reviews r
+            JOIN pull_requests pr ON pr.repo = r.repo AND pr.number = r.pr_number
+            WHERE r.repo = ?
+              AND pr.merged_at >= ? AND pr.merged_at < ?
+              AND pr.author_login IS NOT NULL
+              AND r.reviewer_login IS NOT NULL
+              AND pr.author_login != r.reviewer_login
+            GROUP BY pr.author_login, r.reviewer_login
+            ORDER BY author, reviewer
+            """,
+            (repo, since, until),
+        )
+        return [
+            CollaborationEdge(author=row["author"], reviewer=row["reviewer"], reviews=row["reviews"])
+            for row in rows
+        ]
