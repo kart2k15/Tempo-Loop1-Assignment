@@ -24,6 +24,14 @@ This is a from-scratch build for the Loop take-home assignment (`AI_ML — Home 
 6. README (60-second quickstart) + NOTES.md (run instructions, architecture tour, "what's next", AI usage note).
 7. Security: token never logged or committed; `.env` gitignored, `.env.example` provided; input validated on `owner/repo`/date params; GitHub API calls and the `claude` subprocess call use argument lists, never `shell=True` or raw string interpolation.
 8. Error handling: malformed `owner/repo` → `400` before any GitHub call; GitHub 404 (private/nonexistent repo) → `404` with a clear message, no stack trace leaked; GitHub rate-limit hit → `429`/`503` with a clear message.
+9. `Makefile` (`make setup`, `make run`, `make test`) as the one-command local-run story, in place of Docker.
+
+## Explicitly out of scope
+
+The assignment's "Optional — but nice to have" section lists several bonuses (frontend, more insight signals, caching, a second integration, background sync, tests, an eval harness, containerization). All are optional, not required. Decisions:
+
+- **Skipped**: a second integration, additional insight signals beyond contributors, a background sync worker, an eval harness, Docker/containerization. Reasoning recorded in `NOTES.md`: each adds real build time or (for Docker) local tooling/licensing friction, without being necessary to satisfy any hard requirement.
+- **Kept, despite being optional**: SQLite caching (already core to satisfying the Performance grading criterion), a Streamlit frontend (cheap relative to the demo value), and lightweight tests on the metrics/narrative logic (cheap, and "what you chose to test and why" is graded directly).
 
 ## Architecture
 
@@ -42,9 +50,10 @@ backend/
     test_metrics.py         # unit tests on metric computation (no network)
     test_narrative_prompt.py # test prompt construction / response parsing with a fake CLI output
   requirements.txt
-  .env.example
 frontend/
   streamlit_app.py         # calls backend HTTP API, renders tables + narrative
+.env.example
+Makefile                   # make setup / make run / make test
 README.md
 NOTES.md
 ```
