@@ -16,40 +16,47 @@ GitHub (needs `GITHUB_TOKEN`). See `README.md` for endpoint details and example 
 
 ## 2. Architecture tour
 
-The backend is a small FastAPI app (`backend/app/`) with a linear data flow: `main.py` routes
-validate the request and call `ingest.py`, which checks SQLite for a fresh `(repo, since,
-until)`-keyed ingestion and, on a cache miss, pulls commits/PRs/reviews from GitHub's REST API
-via `github_client.py` (a thin `httpx` wrapper with Link-header pagination, typed errors for
-404/403/5xx, and retry-with-backoff on transient failures) and upserts them into SQLite.
-`metrics.py` then computes rankings and collaboration edges via plain SQL aggregation over the
-ingested rows — scoped by the requested window at query time, not just at ingest time, since
-the same tables can hold data from multiple previously-ingested windows for the same repo.
-`narrative.py` takes those same computed numbers and shells out to the `claude` CLI in headless
-JSON mode to synthesize a short narrative with a root-cause hypothesis, confidence score, and
-evidence chain — using the existing local CLI session's auth rather than a separately billed
-API key, since the assignment explicitly allows this. The Streamlit frontend
-(`frontend/streamlit_app.py`) is a fully separate HTTP client of the backend (not a direct
-import), rendering a contributors table, a bar chart, an interactive PR-reviewer collaboration
-graph (pyvis/vis.js), and the narrative panel.
+See the diagram in `README.md` for the full request path. In short:
 
-The main deliberate trade-off was scope control: the assignment's optional list (a second
-integration, more insight signals, a background sync worker, an eval harness, Docker) was
-mostly declined in favor of getting the required pieces genuinely solid — real end-to-end
-verification against live GitHub and a running server at every step, not just unit tests
-against mocks. The two things kept despite being "optional" — SQLite caching and a real
-frontend — were cheap relative to their value for the Performance and Operability grading
-criteria. The PR reviewer collaboration graph (`GET /insights/collaboration`) was added after
-initial scope was locked, once it became clear a real author↔reviewer signal (not a fabricated
-one) was worth the extra ingestion work.
+**Request flow.** `main.py` (FastAPI) validates the request, then:
+- `ingest.py` checks SQLite for a fresh `(repo, since, until)` cache hit; on a miss, it pulls
+  commits/PRs/reviews from GitHub via `github_client.py` (a thin `httpx` wrapper: Link-header
+  pagination, typed 404/403/5xx errors, retry-with-backoff on transient failures) and upserts
+  them into SQLite.
+- `metrics.py` computes rankings and collaboration edges via plain SQL aggregation over the
+  rows already present in SQLite — re-scoped by the requested window at query time, since the
+  same tables can hold rows from other previously-ingested windows for the same repo.
+- `narrative.py` takes those same computed numbers and shells out to the `claude` CLI.
 
-Docker specifically was skipped by choice, not oversight: it's not that Docker itself costs
-money (the engine/CLI is free and open-source), but assuming a reviewer already has Docker
-Desktop installed and running — or asking them to install it, or a lighter alternative like
-Podman/Colima, just to read numbers off an HTTP endpoint — is real setup friction for a
-take-home with no corresponding benefit here, since there's no multi-service orchestration
-need this app actually requires. A `Makefile` + pinned `requirements.txt` per component gives
-the same "one-command local run"
-outcome (`make setup && make run-backend`) without that tax.
+**LLM auth: subscription, not API key.** `narrative.py` calls
+`claude -p "<prompt>" --output-format json` as a subprocess, authenticated by the local
+Claude Code session already logged in — no `ANTHROPIC_API_KEY` needed, per the assignment's
+explicit allowance for using AI coding tools this way. To run this somewhere with no
+interactive CLI session available (e.g. a CI job), the swap is small: replace the
+`subprocess.run([...])` call in `narrative.py` with a direct call to
+`anthropic.Anthropic(api_key=...).messages.create(...)` via the `anthropic` Python SDK — the
+prompt-building (`_build_prompt`) and response-parsing (`_strip_markdown_fences`,
+`NarrativeResult`) logic wouldn't need to change, only the transport.
+
+**Frontend.** `frontend/streamlit_app.py` is a fully separate HTTP client of the backend (not a
+direct import): a form for repo/date range, a contributors table, a bar chart, an interactive
+PR-reviewer collaboration graph (pyvis/vis.js), and the narrative panel.
+
+**Scope trade-offs.** The assignment's optional list (a second integration, more insight
+signals, a background sync worker, an eval harness, Docker) was mostly declined in favor of
+getting the required pieces genuinely solid — real end-to-end verification against live GitHub
+and a running server at every step, not just unit tests against mocks. The two things kept
+despite being "optional" — SQLite caching and a real frontend — were cheap relative to their
+value for the Performance and Operability grading criteria. The PR reviewer collaboration graph
+(`GET /insights/collaboration`) was added after initial scope was locked, once it became clear
+a real author↔reviewer signal (not a fabricated one) was worth the extra ingestion work.
+
+**Why not Docker.** Not a cost issue — the Docker engine/CLI is free and open-source. Assuming
+a reviewer already has Docker Desktop installed and running, or asking them to install it (or a
+lighter alternative like Podman/Colima) just to read numbers off an HTTP endpoint, is real
+setup friction with no corresponding benefit here — there's no multi-service orchestration need
+this app actually has. A `Makefile` + pinned `requirements.txt` per component gives the same
+"one-command local run" outcome (`make setup && make run-backend`) without that tax.
 
 ## 3. What I'd do next with another day
 
