@@ -31,6 +31,17 @@ make run-frontend            # serves http://localhost:8501
 
 Full interactive API docs (curl/Postman-friendly): http://localhost:8000/docs
 
+## Make targets
+
+| Command | What it does |
+|---|---|
+| `make setup` | Creates `backend/.venv` and `frontend/.venv`, installs pinned deps into each, seeds `.env` from `.env.example` if one doesn't exist yet |
+| `make run-backend` | Runs the FastAPI app with `uvicorn --reload` on http://localhost:8000 |
+| `make run-frontend` | Runs the Streamlit UI on http://localhost:8501 |
+| `make test` | Runs the 55 offline tests (fixtures/mocks, no network) |
+| `make test-integration` | Runs the 2 tests that hit live GitHub (needs `GITHUB_TOKEN` in `.env`) |
+| `make clean` | Removes both venvs, the pytest cache, and `data/insights.db` (does **not** touch `.env`) |
+
 ## Architecture
 
 ```mermaid
@@ -82,9 +93,19 @@ flowchart TB
 
 Every request re-checks SQLite before touching GitHub: a fresh `(repo, since, until)` hit skips
 `github_client.py` entirely, a miss fetches and upserts. `metrics.py` never talks to GitHub —
-it only aggregates whatever's already in SQLite. The narrative endpoint is the only one that
+it only aggregates the rows already present in SQLite. The narrative endpoint is the only one that
 also shells out to the `claude` CLI, after computing the same numbers `/insights/contributors`
 would return.
+
+**On the "LLM" in the diagram**: the narrative endpoint doesn't call a separately billed LLM
+API. It runs `claude -p "<prompt>" --output-format json` as a subprocess, authenticated by
+the local Claude Code session/subscription already logged in on the machine running
+the backend — no `ANTHROPIC_API_KEY` needed. This means the narrative endpoint only works on a
+machine with the `claude` CLI installed and authenticated (see Quickstart). If you'd rather use
+the Anthropic API directly instead (e.g. to run this somewhere with no interactive CLI
+session, like CI) — swap the `subprocess.run([...])` call in `backend/app/narrative.py` for a
+direct call via the `anthropic` Python SDK (`Anthropic(api_key=...).messages.create(...)`); the
+prompt-building and response-parsing logic around it doesn't need to change, only that one call.
 
 ## Endpoints
 
@@ -122,6 +143,24 @@ match, but can diverge for rebased/backported commits — a commit authored week
 land on the branch (and pass GitHub's committer-date filter) inside your query window while its
 author date falls outside it, so it won't appear in the ranking. Both dates are "correct," they
 just answer slightly different questions ("when was this written" vs "when did it land").
+
+## Choosing a repo and date range
+
+The endpoints work against **any public GitHub repo** — `nodejs/node`, `pandas-dev/pandas`,
+`apache/spark`, or any other. The trade-off is ingestion time on a cache miss: a large, active repo
+over a long window means dozens of sequential per-PR "detail" and "reviews" calls (GitHub's
+list endpoints don't include line counts or reviews, so those need one extra call each, per
+merged PR — see `PLAN.md`). A repo/window with a handful of merged PRs ingests in a couple of
+seconds; something like `pandas-dev/pandas` over 30 days can take over a minute on the first
+(uncached) request. Once ingested, repeat queries for that same window are instant (see
+Caching below).
+
+Rule of thumb: for a quick demo, keep the window to ~1-2 weeks on an active repo, or use a
+wider window on a quieter one. Configure it either way:
+- **Streamlit UI**: the "Repository" text field and the "Since"/"Until" date pickers — defaults
+  to `pandas-dev/pandas`, last 14 days.
+- **Direct API calls**: the `repo`, `since`, `until` query params on any endpoint, e.g.
+  `?repo=nodejs/node&since=2026-08-01&until=2026-08-08`.
 
 ## Testing
 
