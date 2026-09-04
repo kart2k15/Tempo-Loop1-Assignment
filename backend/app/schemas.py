@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel
 
@@ -18,3 +18,13 @@ class ContributorsResponse(BaseModel):
     since: date
     until: date
     contributors: List[ContributorOut]
+
+
+class NarrativeResponse(BaseModel):
+    repo: str
+    since: date
+    until: date
+    narrative: str
+    root_cause_hypothesis: Optional[str]
+    confidence: float
+    evidence: List[str]

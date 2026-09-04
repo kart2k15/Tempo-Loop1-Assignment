@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import date
+from typing import Tuple
 
 from fastapi import FastAPI, HTTPException, Query
 
@@ -9,7 +10,8 @@ from app.db.connection import init_db
 from app.github_client import InvalidRepoError, RateLimitError, RepoNotFoundError
 from app.ingest import ingest_repo
 from app.metrics import compute_contributors
-from app.schemas import ContributorOut, ContributorsResponse
+from app.narrative import NarrativeGenerationError, generate_narrative
+from app.schemas import ContributorOut, ContributorsResponse, NarrativeResponse
 
 
 @asynccontextmanager
@@ -25,6 +27,27 @@ def _to_github_timestamp(d: date) -> str:
     return f"{d.isoformat()}T00:00:00Z"
 
 
+def _validate_and_ingest(repo: str, since: date, until: date) -> Tuple[str, str]:
+    """Shared by both /insights endpoints: validates the date range, ingests the window,
+    and maps GitHubClient's typed errors to HTTP status codes. Returns the GitHub-format
+    (since, until) timestamps for the caller to pass into metrics/narrative."""
+    if until <= since:
+        raise HTTPException(status_code=400, detail="`until` must be after `since`")
+
+    since_ts, until_ts = _to_github_timestamp(since), _to_github_timestamp(until)
+
+    try:
+        ingest_repo(repo, since=since_ts, until=until_ts)
+    except InvalidRepoError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RepoNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+
+    return since_ts, until_ts
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
@@ -36,20 +59,7 @@ def get_contributors(
     since: date = Query(..., description="inclusive start date (UTC)"),
     until: date = Query(..., description="exclusive end date (UTC)"),
 ) -> ContributorsResponse:
-    if until <= since:
-        raise HTTPException(status_code=400, detail="`until` must be after `since`")
-
-    since_ts = _to_github_timestamp(since)
-    until_ts = _to_github_timestamp(until)
-
-    try:
-        ingest_repo(repo, since=since_ts, until=until_ts)
-    except InvalidRepoError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    except RepoNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except RateLimitError as exc:
-        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    since_ts, until_ts = _validate_and_ingest(repo, since, until)
 
     stats = compute_contributors(repo, since=since_ts, until=until_ts)
     return ContributorsResponse(
@@ -60,4 +70,29 @@ def get_contributors(
             ContributorOut(login=s.login, commits=s.commits, prs_merged=s.prs_merged, lines_changed=s.lines_changed)
             for s in stats
         ],
+    )
+
+
+@app.get("/insights/narrative", response_model=NarrativeResponse)
+def get_narrative(
+    repo: str = Query(..., description="owner/repo, e.g. pandas-dev/pandas"),
+    since: date = Query(..., description="inclusive start date (UTC)"),
+    until: date = Query(..., description="exclusive end date (UTC)"),
+) -> NarrativeResponse:
+    since_ts, until_ts = _validate_and_ingest(repo, since, until)
+
+    stats = compute_contributors(repo, since=since_ts, until=until_ts)
+    try:
+        result = generate_narrative(repo, since=since.isoformat(), until=until.isoformat(), stats=stats)
+    except NarrativeGenerationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    return NarrativeResponse(
+        repo=repo,
+        since=since,
+        until=until,
+        narrative=result.narrative,
+        root_cause_hypothesis=result.root_cause_hypothesis,
+        confidence=result.confidence,
+        evidence=result.evidence,
     )
