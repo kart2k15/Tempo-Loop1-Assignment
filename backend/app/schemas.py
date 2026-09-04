@@ -28,3 +28,16 @@ class NarrativeResponse(BaseModel):
     root_cause_hypothesis: Optional[str]
     confidence: float
     evidence: List[str]
+
+
+class CollaborationEdgeOut(BaseModel):
+    author: str
+    reviewer: str
+    reviews: int
+
+
+class CollaborationResponse(BaseModel):
+    repo: str
+    since: date
+    until: date
+    edges: List[CollaborationEdgeOut]

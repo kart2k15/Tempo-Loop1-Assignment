@@ -139,3 +139,8 @@ class GitHubClient:
         """Single-PR detail, needed for additions/deletions (not present on the list endpoint)."""
         validate_repo(repo)
         return self._get(f"/repos/{repo}/pulls/{number}").json()
+
+    def list_reviews(self, repo: str, pr_number: int) -> Iterator[dict]:
+        """Reviews submitted on a single PR - who reviewed it and with what verdict."""
+        validate_repo(repo)
+        return self._paginate(f"/repos/{repo}/pulls/{pr_number}/reviews")

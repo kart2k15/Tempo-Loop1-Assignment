@@ -105,3 +105,34 @@ class TestGetNarrative:
     def test_until_before_since_is_400(self, client):
         resp = client.get("/insights/narrative", params={"repo": "o/r", "since": "2025-02-01", "until": "2025-01-01"})
         assert resp.status_code == 400
+
+
+class TestGetCollaboration:
+    def test_returns_edges_without_hitting_network(self, client):
+        with db_session() as conn:
+            conn.execute(
+                "INSERT INTO pull_requests (repo, number, author_login, created_at, merged_at) VALUES (?, ?, ?, ?, ?)",
+                ("o/r", 1, "alice", "2025-01-10T00:00:00Z", "2025-01-10T00:00:00Z"),
+            )
+            conn.execute(
+                "INSERT INTO reviews (repo, pr_number, review_id, reviewer_login, state, submitted_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("o/r", 1, 1, "bob", "APPROVED", "2025-01-11T00:00:00Z"),
+            )
+        with patch("app.main.ingest_repo") as mock_ingest:
+            resp = client.get("/insights/collaboration", params={"repo": "o/r", "since": "2025-01-01", "until": "2025-02-01"})
+
+        mock_ingest.assert_called_once()
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["edges"] == [{"author": "alice", "reviewer": "bob", "reviews": 1}]
+
+    def test_invalid_repo_maps_to_400(self, client):
+        with patch("app.main.ingest_repo", side_effect=InvalidRepoError("bad repo")):
+            resp = client.get("/insights/collaboration", params={"repo": "bad", "since": "2025-01-01", "until": "2025-02-01"})
+        assert resp.status_code == 400
+
+    def test_empty_edges_returns_200(self, client):
+        with patch("app.main.ingest_repo"):
+            resp = client.get("/insights/collaboration", params={"repo": "o/r", "since": "2025-01-01", "until": "2025-02-01"})
+        assert resp.status_code == 200
+        assert resp.json()["edges"] == []
