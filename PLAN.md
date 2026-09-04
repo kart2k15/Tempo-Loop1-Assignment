@@ -1,4 +1,4 @@
-# Loop Take-Home: GitHub Insights Service — Implementation Plan
+# Tempo Take-Home Loop1: GitHub Insights Service — Implementation Plan
 
 ## Context
 
@@ -12,7 +12,7 @@ This is a from-scratch build for the Loop take-home assignment (`AI_ML — Home 
 - **LLM for narrative endpoint**: shells out to the `claude` CLI in headless mode (`claude -p "<prompt>" --output-format json`) as a subprocess, using existing local CLI authentication rather than a separately billed API key. Explicitly permitted per the assignment's "On using AI coding assistants" section.
 - **Repo scope**: endpoints accept any arbitrary public `owner/repo` as a query param — not fixed to one repo.
 - **Demo repo for README examples**: `pandas-dev/pandas` — active, real PR/review/issue history so insights and narrative are genuinely interesting, moderate size, easy to sanity-check against the live GitHub UI. Endpoints themselves stay fully generic.
-- **Git workflow**: small, reviewable commits on `planning-stage` → PR → merge to `main`, each step confirmed before moving to the next.
+- **Git workflow**: trunk-based development with short-lived feature branches (not GitFlow's persistent `dev` branch). `planning-stage` holds this plan and gets PR'd into `main` once reviewed. Each subsequent chunk of work gets its own feature branch off `main` (e.g. `feature/backend-scaffold`, `feature/github-ingestion`, `feature/insights-api`, `feature/narrative-endpoint`, `feature/frontend`, `feature/docs`), PR'd and merged individually, then deleted. Each step confirmed before starting the next.
 
 ## Scope (MVP, hard requirements from assignment)
 
@@ -79,16 +79,16 @@ NOTES.md
 3. `curl '.../insights/narrative?...'` returns a narrative with confidence + evidence chain, and doesn't hang past a defined timeout.
 4. `pytest` passes for the two test files.
 5. `streamlit run frontend/streamlit_app.py` renders the table + narrative for a sample repo.
-6. `git log` on `planning-stage` shows small, reviewable commits (scaffold → github client → ingest+db → metrics endpoint → narrative endpoint → streamlit → README/tests) rather than one giant commit; then PR `planning-stage` → `main`.
+6. `git log` on `main` shows small, reviewable PRs (scaffold → github client → ingest+db → metrics endpoint → narrative endpoint → streamlit → README/tests) rather than one giant commit.
 
-## Commit sequence (each step confirmed before starting the next)
+## Feature branch sequence (each PR reviewed and merged before starting the next)
 
-1. `PLAN.md` (this file)
-2. Scaffold: `requirements.txt`, `.env.example`, `config.py`, `db.py` (schema)
-3. `github_client.py` — GitHub REST wrapper
-4. `ingest.py` — fetch + upsert into SQLite
-5. `metrics.py` + `schemas.py` + `main.py` — `/insights/contributors` endpoint
-6. `narrative.py` — `/insights/narrative` endpoint
-7. `frontend/streamlit_app.py`
-8. Tests
-9. `README.md` + `NOTES.md`
+1. `planning-stage` — `PLAN.md` (this file) → PR → merge to `main`
+2. `feature/backend-scaffold` — `requirements.txt`, `.env.example`, `config.py`, `db.py` (schema)
+3. `feature/github-client` — `github_client.py`, GitHub REST wrapper
+4. `feature/ingestion` — `ingest.py`, fetch + upsert into SQLite
+5. `feature/insights-api` — `metrics.py` + `schemas.py` + `main.py`, `/insights/contributors` endpoint
+6. `feature/narrative-api` — `narrative.py`, `/insights/narrative` endpoint
+7. `feature/frontend` — `frontend/streamlit_app.py`
+8. `feature/tests` — test suite
+9. `feature/docs` — `README.md` + `NOTES.md`
