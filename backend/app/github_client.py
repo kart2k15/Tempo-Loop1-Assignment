@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 from typing import Any, Iterator, Optional
 
 import httpx
@@ -11,6 +12,12 @@ GITHUB_API_BASE = "https://api.github.com"
 
 # owner/repo as GitHub allows them: alphanumerics, hyphen, underscore, dot.
 REPO_PATTERN = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+
+# Transient failure modes worth retrying: network-level hiccups and GitHub's own
+# server-side error codes. NOT 403/404 - those are meaningful application responses
+# handled explicitly below, not transient failures.
+RETRYABLE_EXCEPTIONS = (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError)
+RETRYABLE_STATUS_CODES = {500, 502, 503, 504}
 
 
 class GitHubClientError(Exception):
@@ -41,7 +48,13 @@ def validate_repo(repo: str) -> None:
 class GitHubClient:
     """Thin wrapper over the GitHub REST API: auth, pagination, and typed errors."""
 
-    def __init__(self, token: Optional[str] = None, transport: Optional[httpx.BaseTransport] = None):
+    def __init__(
+        self,
+        token: Optional[str] = None,
+        transport: Optional[httpx.BaseTransport] = None,
+        max_retries: int = 3,
+        retry_backoff_seconds: float = 0.5,
+    ):
         self._client = httpx.Client(
             base_url=GITHUB_API_BASE,
             headers={
@@ -52,6 +65,8 @@ class GitHubClient:
             timeout=30.0,
             transport=transport,
         )
+        self._max_retries = max_retries
+        self._retry_backoff_seconds = retry_backoff_seconds
 
     def close(self) -> None:
         self._client.close()
@@ -63,7 +78,7 @@ class GitHubClient:
         self.close()
 
     def _get(self, url: str, params: Optional[dict[str, Any]] = None) -> httpx.Response:
-        resp = self._client.get(url, params=params)
+        resp = self._get_with_retry(url, params)
         if resp.status_code == 404:
             raise RepoNotFoundError(f"GitHub returned 404 for {url}")
         if resp.status_code == 403 and resp.headers.get("x-ratelimit-remaining") == "0":
@@ -71,6 +86,23 @@ class GitHubClient:
             raise RateLimitError("GitHub API rate limit exceeded", reset_at=reset_at)
         resp.raise_for_status()
         return resp
+
+    def _get_with_retry(self, url: str, params: Optional[dict[str, Any]]) -> httpx.Response:
+        """Retries transient network errors and 5xx responses with exponential backoff.
+        404/403 are meaningful application responses, not transient failures - never retried
+        here, always handled by the caller."""
+        attempt = 0
+        while True:
+            try:
+                resp = self._client.get(url, params=params)
+            except RETRYABLE_EXCEPTIONS:
+                if attempt >= self._max_retries:
+                    raise
+            else:
+                if resp.status_code not in RETRYABLE_STATUS_CODES or attempt >= self._max_retries:
+                    return resp
+            time.sleep(self._retry_backoff_seconds * (2**attempt))
+            attempt += 1
 
     def _paginate(self, path: str, params: Optional[dict[str, Any]] = None) -> Iterator[dict]:
         params = dict(params or {})
@@ -107,13 +139,3 @@ class GitHubClient:
         """Single-PR detail, needed for additions/deletions (not present on the list endpoint)."""
         validate_repo(repo)
         return self._get(f"/repos/{repo}/pulls/{number}").json()
-
-    def list_reviews(self, repo: str, pr_number: int) -> Iterator[dict]:
-        validate_repo(repo)
-        return self._paginate(f"/repos/{repo}/pulls/{pr_number}/reviews")
-
-    def list_issues(self, repo: str, since: str, state: str = "all") -> Iterator[dict]:
-        """Includes PRs (GitHub models PRs as issues); callers filter those out via the
-        `pull_request` key present only on PR-backed issues."""
-        validate_repo(repo)
-        return self._paginate(f"/repos/{repo}/issues", {"since": since, "state": state})
