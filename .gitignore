@@ -3,8 +3,13 @@ dist/
 build/
 .env
 .env.*
+!.env.example
 *.log
 .DS_Store
 coverage/
 *.sqlite
 *.db
+.venv/
+__pycache__/
+*.pyc
+/data/
