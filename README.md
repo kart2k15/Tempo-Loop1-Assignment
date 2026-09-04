@@ -31,6 +31,61 @@ make run-frontend            # serves http://localhost:8501
 
 Full interactive API docs (curl/Postman-friendly): http://localhost:8000/docs
 
+## Architecture
+
+```mermaid
+flowchart TB
+    subgraph Client["Client"]
+        Browser["Browser / curl / Postman"]
+    end
+
+    subgraph Frontend["Frontend - Streamlit"]
+        ST["streamlit_app.py<br/>form, contributors table,<br/>bar chart, pyvis collaboration<br/>graph, narrative panel"]
+    end
+
+    subgraph Backend["Backend - FastAPI on Uvicorn"]
+        API["main.py<br/>GET /health<br/>GET /insights/contributors<br/>GET /insights/narrative<br/>GET /insights/collaboration"]
+        ING["ingest.py<br/>cache check + orchestration"]
+        MET["metrics.py<br/>SQL aggregation:<br/>rankings + collaboration edges"]
+        NAR["narrative.py<br/>prompt builder + response parser"]
+        GHC["github_client.py<br/>httpx client, pagination,<br/>retry/backoff, typed errors"]
+    end
+
+    subgraph Cache["Cache / persistence"]
+        DB[("SQLite<br/>ingestions (repo, since, until)<br/>commits, pull_requests, reviews")]
+    end
+
+    subgraph External["External services"]
+        GHAPI[("GitHub REST API")]
+        CLI["claude CLI (subprocess)<br/>--output-format json<br/>LLM narrative synthesis"]
+    end
+
+    Browser -- "GET /insights/*" --> ST
+    Browser -. "GET /insights/* (direct)" .-> API
+    ST -- "HTTP GET" --> API
+
+    API --> ING
+    API --> MET
+    API --> NAR
+
+    ING -- "check freshness" --> DB
+    ING -- "cache miss: fetch" --> GHC
+    GHC -- "REST calls" --> GHAPI
+    GHC -- "commits / PRs / reviews" --> ING
+    ING -- "upsert rows" --> DB
+
+    MET -- "SELECT ... GROUP BY" --> DB
+
+    NAR -- "prompt with computed numbers" --> CLI
+    CLI -- "JSON: narrative, confidence,<br/>root_cause_hypothesis, evidence" --> NAR
+```
+
+Every request re-checks SQLite before touching GitHub: a fresh `(repo, since, until)` hit skips
+`github_client.py` entirely, a miss fetches and upserts. `metrics.py` never talks to GitHub —
+it only aggregates whatever's already in SQLite. The narrative endpoint is the only one that
+also shells out to the `claude` CLI, after computing the same numbers `/insights/contributors`
+would return.
+
 ## Endpoints
 
 All three take the same query params: `repo` (`owner/repo`), `since`, `until` (`YYYY-MM-DD`,
