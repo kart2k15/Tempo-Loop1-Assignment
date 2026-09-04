@@ -10,8 +10,8 @@ from app.github_client import (
 )
 
 
-def make_client(handler) -> GitHubClient:
-    return GitHubClient(token="fake-token", transport=httpx.MockTransport(handler))
+def make_client(handler, **kwargs) -> GitHubClient:
+    return GitHubClient(token="fake-token", transport=httpx.MockTransport(handler), **kwargs)
 
 
 class TestGitHubClient:
@@ -80,3 +80,62 @@ class TestGitHubClient:
         client = make_client(handler)
         with pytest.raises(httpx.HTTPStatusError):
             list(client.list_commits("o/r", since="2020-01-01T00:00:00Z", until="2020-02-01T00:00:00Z"))
+
+    def test_retries_transient_timeout_then_succeeds(self, monkeypatch):
+        monkeypatch.setattr("time.sleep", lambda seconds: None)
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise httpx.ReadTimeout("simulated timeout", request=request)
+            return httpx.Response(200, json=[{"sha": "aaa"}])
+
+        client = make_client(handler, max_retries=3, retry_backoff_seconds=0.01)
+        commits = list(client.list_commits("o/r", since="2020-01-01T00:00:00Z", until="2020-02-01T00:00:00Z"))
+
+        assert commits == [{"sha": "aaa"}]
+        assert calls["n"] == 3
+
+    def test_retries_5xx_then_succeeds(self, monkeypatch):
+        monkeypatch.setattr("time.sleep", lambda seconds: None)
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] < 2:
+                return httpx.Response(503, json={"message": "Service Unavailable"})
+            return httpx.Response(200, json=[{"sha": "bbb"}])
+
+        client = make_client(handler, max_retries=3, retry_backoff_seconds=0.01)
+        commits = list(client.list_commits("o/r", since="2020-01-01T00:00:00Z", until="2020-02-01T00:00:00Z"))
+
+        assert commits == [{"sha": "bbb"}]
+        assert calls["n"] == 2
+
+    def test_exhausts_retries_and_raises(self, monkeypatch):
+        monkeypatch.setattr("time.sleep", lambda seconds: None)
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            raise httpx.ConnectError("simulated connection failure", request=request)
+
+        client = make_client(handler, max_retries=2, retry_backoff_seconds=0.01)
+        with pytest.raises(httpx.ConnectError):
+            list(client.list_commits("o/r", since="2020-01-01T00:00:00Z", until="2020-02-01T00:00:00Z"))
+
+        assert calls["n"] == 3  # initial attempt + 2 retries
+
+    def test_404_is_not_retried(self):
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            return httpx.Response(404, json={"message": "Not Found"})
+
+        client = make_client(handler, max_retries=3, retry_backoff_seconds=0.01)
+        with pytest.raises(RepoNotFoundError):
+            list(client.list_commits("o/r", since="2020-01-01T00:00:00Z", until="2020-02-01T00:00:00Z"))
+
+        assert calls["n"] == 1
