@@ -12,7 +12,7 @@ This is a from-scratch build for the Loop take-home assignment (`AI_ML — Home 
 - **LLM for narrative endpoint**: shells out to the `claude` CLI in headless mode (`claude -p "<prompt>" --output-format json`) as a subprocess, using existing local CLI authentication rather than a separately billed API key. Explicitly permitted per the assignment's "On using AI coding assistants" section.
 - **Repo scope**: endpoints accept any arbitrary public `owner/repo` as a query param — not fixed to one repo.
 - **Demo repo for README examples**: `pandas-dev/pandas` — active, real PR/review/issue history so insights and narrative are genuinely interesting, moderate size, easy to sanity-check against the live GitHub UI. Endpoints themselves stay fully generic.
-- **Git workflow**: trunk-based development with short-lived feature branches (not GitFlow's persistent `dev` branch). `planning-stage` holds this plan and gets PR'd into `main` once reviewed. Each subsequent chunk of work gets its own feature branch off `main` (e.g. `feature/backend-scaffold`, `feature/github-ingestion`, `feature/insights-api`, `feature/narrative-endpoint`, `feature/frontend`, `feature/docs`), PR'd and merged individually, then deleted. Each step confirmed before starting the next.
+- **Git workflow**: trunk-based development with short-lived feature branches (not GitFlow's persistent `dev` branch).
 
 ## Scope (MVP, hard requirements from assignment)
 
