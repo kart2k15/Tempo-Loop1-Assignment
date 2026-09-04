@@ -41,7 +41,7 @@ def validate_repo(repo: str) -> None:
 class GitHubClient:
     """Thin wrapper over the GitHub REST API: auth, pagination, and typed errors."""
 
-    def __init__(self, token: Optional[str] = None):
+    def __init__(self, token: Optional[str] = None, transport: Optional[httpx.BaseTransport] = None):
         self._client = httpx.Client(
             base_url=GITHUB_API_BASE,
             headers={
@@ -50,6 +50,7 @@ class GitHubClient:
                 "X-GitHub-Api-Version": "2022-11-28",
             },
             timeout=30.0,
+            transport=transport,
         )
 
     def close(self) -> None:
